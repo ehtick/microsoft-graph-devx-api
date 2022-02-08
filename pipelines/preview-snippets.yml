@@ -1,0 +1,89 @@
+# Copyright (c) Microsoft Corporation. All rights reserved.
+# Licensed under the MIT License.
+
+# Pipeline for Snippet injection into docs
+
+trigger: none
+pr: none
+schedules:
+  - cron: "30 12 * * *"
+    displayName: Daily preview release snippets updates
+    branches:
+      include:
+      - master
+    always: true
+
+resources:
+ repositories:
+   - repository: microsoft-graph-docs
+     type: github
+     endpoint: microsoftgraph
+     name: microsoftgraph/microsoft-graph-docs
+     ref: main
+
+pool:
+  vmImage: 'ubuntu-latest'
+
+variables:
+  buildConfiguration: 'Release'
+  apidoctorPath: 'microsoft-graph-devx-api/apidoctor'
+  apidoctorProjects: '$(apidoctorPath)/**/*.csproj'
+  snippetLanguages: 'TypeScript'
+
+steps:
+- checkout: self
+  displayName: checkout GE api
+  fetchDepth: 1
+  submodules: recursive
+  persistCredentials: true
+
+- checkout: microsoft-graph-docs
+  displayName: checkout docs
+  fetchDepth: 1
+  persistCredentials: true
+
+- template: templates/git-config-preview.yml
+
+- task: UseDotNet@2
+  displayName: 'Install .NET Core SDK 5'
+  inputs:
+    version: 5.x
+
+- task: UseDotNet@2
+  displayName: 'Install .NET Core SDK 6'
+  inputs:
+    version: 6.0.x
+
+- task: DotNetCoreCLI@2
+  displayName: 'Build snippet generator'
+  inputs:
+    command: 'build'
+    projects: 'microsoft-graph-devx-api/CodeSnippetsReflection.App/CodeSnippetsReflection.App.csproj'
+    arguments: '--configuration $(buildConfiguration)'
+
+- task: DotNetCoreCLI@2
+  displayName: 'Restore packages for APIDoctor'
+  inputs:
+    command: 'restore'
+    projects: '$(Build.SourcesDirectory)/$(apidoctorProjects)'
+
+- task: DotNetCoreCLI@2
+  displayName: 'Build APIDoctor'
+  inputs:
+    command: 'build'
+    projects: '$(Build.SourcesDirectory)/$(apidoctorProjects)'
+    arguments: '--configuration $(buildConfiguration)'
+
+- pwsh: |
+    # release folder can change based on .NET core version, so search recursively in bin folder
+    $snippetGeneratorPath = (Get-ChildItem $env:BUILD_SOURCESDIRECTORY/microsoft-graph-devx-api/CodeSnippetsReflection.App/bin/Release *App -Recurse).FullName
+    Write-Host "Path to snippet generator tool: $snippetGeneratorPath"
+
+    $apidoctorPath = (Get-ChildItem $env:BUILD_SOURCESDIRECTORY/microsoft-graph-devx-api/apidoctor/ApiDoctor.Console/bin/Release apidoc -Recurse).FullName
+    Write-Host "Path to apidoctor tool: $apidoctorPath"
+
+    . $apidoctorPath generate-snippets --ignore-warnings --path . --snippet-generator-path $snippetGeneratorPath --lang $(snippetLanguages) --git-path "/bin/git"
+  displayName: 'Generate snippets'
+  workingDirectory: microsoft-graph-docs
+
+- template: templates/commit-changes.yml
