@@ -1,6 +1,6 @@
 steps:
 - pwsh: |
-    $branchName = "preview-docs" # Refreshes the same branch 
+    $branchName = "preview-snippet-generation/$env:BUILD_BUILDID" # Match the spec in the GH Action
     Write-Host "Branch path spec for the pull request will be $branchName"
     Write-Host "##vso[task.setvariable variable=branchName]$branchName"
   displayName: 'Calculate and set pipeline variables for this job'
@@ -8,7 +8,7 @@ steps:
 - pwsh: |
     Write-Host "The new branch name will be: $env:BRANCHNAME"
     git checkout -B $env:BRANCHNAME | Write-Host
-  displayName: 'Git: Generate preview-docs branch'
+  displayName: 'Git: branch from preview-docs branch named with the build id: $(Build.BuildId)'
   workingDirectory: 'microsoft-graph-docs'
 
 - pwsh: |
