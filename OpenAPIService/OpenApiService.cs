@@ -394,11 +394,11 @@ namespace OpenAPIService
         /// </summary>
         /// <param name="rootNode">The target <see cref="OpenApiUrlTreeNode"/> root node.</param>
         /// <param name="stream">The destination for writing the JSON text to.</param>
-        public void ConvertOpenApiUrlTreeNodeToJson(OpenApiUrlTreeNode rootNode, Stream stream)
+        public async Task ConvertOpenApiUrlTreeNodeToJsonAsync(OpenApiUrlTreeNode rootNode, Stream stream)
         {
             using Utf8JsonWriter writer = new Utf8JsonWriter(stream);
             ConvertOpenApiUrlTreeNodeToJson(writer, rootNode);
-            writer.FlushAsync();
+            await writer.FlushAsync();
         }
 
         /// <summary>
@@ -604,7 +604,7 @@ namespace OpenAPIService
             }
             finally
             {
-                if (_graphUriQueue.Any())
+                if (_graphUriQueue.Count != 0)
                 {
                     _graphUriQueue.Dequeue();
                 }

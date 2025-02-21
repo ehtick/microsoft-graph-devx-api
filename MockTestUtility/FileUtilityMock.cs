@@ -2,7 +2,6 @@
 //  Copyright (c) Microsoft Corporation.  All Rights Reserved.  Licensed under the MIT License.  See License in the project root for license information.
 // ------------------------------------------------------------------------------------------------------------------------------------------------------
 
-using FileService.Common;
 using FileService.Interfaces;
 using System;
 using System.IO;
@@ -18,7 +17,7 @@ namespace MockTestUtility
     /// </summary>
     public class FileUtilityMock : IFileUtility, IHttpClientUtility
     {
-        public async Task<string> ReadFromFile(string filePathSource)
+        public async Task<string> ReadFromFileAsync(string filePathSource)
         {
             UtilityFunctions.CheckArgumentNull(filePathSource, nameof(filePathSource));
 
@@ -36,10 +35,10 @@ namespace MockTestUtility
             UtilityFunctions.CheckArgumentNull(requestMessage, nameof(requestMessage));
 
             // Mock reading from an HTTP source.
-            return await ReadFromFile(requestMessage.RequestUri.OriginalString);
+            return await ReadFromFileAsync(requestMessage.RequestUri.OriginalString);
         }
 
-        public Task WriteToFile(string fileContents, string filePathSource)
+        public Task WriteToFileAsync(string fileContents, string filePathSource)
         {
             // Not implemented
             return Task.CompletedTask;

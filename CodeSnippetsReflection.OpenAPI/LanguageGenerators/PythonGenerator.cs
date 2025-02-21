@@ -1,22 +1,27 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Text;
 using CodeSnippetsReflection.OpenAPI.ModelGraph;
 using CodeSnippetsReflection.StringExtensions;
 using Microsoft.OpenApi.Services;
+using System.Text.RegularExpressions;
+
 
 namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 {
     public class PythonGenerator : ILanguageGenerator<SnippetModel, OpenApiUrlTreeNode>
     {
         private const string ClientVarName = "graph_client";
-        private const string ClientVarType = "GraphServiceClient";
-        private const string HttpCoreVarName = "request_adapter";
         private const string RequestBodyVarName = "request_body";
         private const string RequestConfigurationVarName = "request_configuration";
+        private const string RequestConfigurationType = "RequestConfiguration";
         private const string RequestParametersPropertyName = "query_params";
-        
+        private const string VersionInformationString = "# Code snippets are only available for the latest version. Current version is 1.x";
+
+        private const string InitializationInfoString = "# To initialize your graph_client, see https://learn.microsoft.com/en-us/graph/sdks/create-client?from=snippets&tabs=python";
+
+
         private static readonly HashSet<string> ReservedTypeNames = new(StringComparer.OrdinalIgnoreCase)
         {
             "and",
@@ -58,17 +63,108 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
             "yield",
             "property",
         };
-        
+
         public string GenerateCodeSnippet(SnippetModel snippetModel)
         {
             var indentManager = new IndentManager();
             var codeGraph = new SnippetCodeGraph(snippetModel);
-            var snippetBuilder = new StringBuilder($"# THE PYTHON SDK IS IN PREVIEW. FOR NON-PRODUCTION USE ONLY{Environment.NewLine}{Environment.NewLine}" +
-                                                   $"{ClientVarName} = {ClientVarType}({HttpCoreVarName}){Environment.NewLine}{Environment.NewLine}");
+            var snippetBuilder = new StringBuilder();
+            snippetBuilder.AppendLine(InitializationInfoString);
 
             WriteRequestPayloadAndVariableName(codeGraph, snippetBuilder, indentManager);
             WriteRequestExecutionPath(codeGraph, snippetBuilder, indentManager);
+            var importStatements = GetImportStatements(snippetModel);
+            snippetBuilder.Insert(0, VersionInformationString + Environment.NewLine);
+            snippetBuilder.Insert(VersionInformationString.Length + Environment.NewLine.Length, string.Join(Environment.NewLine, importStatements) + Environment.NewLine);
             return snippetBuilder.ToString();
+        }
+        private static HashSet<string> GetImportStatements(SnippetModel snippetModel)
+        {
+            var packageName = snippetModel.ApiVersion.ToLowerInvariant() switch
+            {
+                "v1.0" => "msgraph",
+                "beta" => "msgraph_beta",
+                _ => throw new ArgumentOutOfRangeException($"Unsupported Graph version in url: {snippetModel.ApiVersion}")
+            };
+            var modelImportPrefix = $"from {packageName}.generated.models";
+            var requestBuilderImportPrefix = $"from {packageName}.generated";
+            const string BaseRequestConfigImport = "from kiota_abstractions.base_request_configuration import RequestConfiguration";
+
+            var snippetImports = new HashSet<string>();
+
+            snippetImports.Add($"from {packageName} import GraphServiceClient");
+
+            var imports = ImportsGenerator.GenerateImportTemplates(snippetModel);
+            foreach (var import in imports)
+            {
+                switch (import.Kind)
+                {
+                    case ImportKind.Model:
+                        // We don't use custom DateOnly and TimeOnly types for python snippets.
+                        if (import.ModelProperty.PropertyType is PropertyType.DateOnly or PropertyType.TimeOnly)
+                            continue;
+                        var typeDefinition = import.ModelProperty.TypeDefinition;
+                        const string modelsNamespaceName = "models.microsoft.graph";
+                        var modelNamespaceStringLen = modelsNamespaceName.Length;
+                        var importModelNamespace = import.ModelProperty.NamespaceName;
+                        var inModelsNamespace = importModelNamespace.Equals(modelsNamespaceName);
+                        
+                        var nested = !inModelsNamespace && importModelNamespace.StartsWith(modelsNamespaceName);
+                        // This takes care of models in nested namespaces inside the model namespace for instance
+                        // models inside IdentityGovernance namespace
+                        var othersParts = nested switch
+                        {
+                            true => importModelNamespace[modelNamespaceStringLen..]
+                                .Split('.', StringSplitOptions.RemoveEmptyEntries)
+                                .Select(static x => x.ToSnakeCase())
+                                .Aggregate(static (x, y) => $"{x}.{y}"),
+                            false => string.Empty
+                        };
+                            
+                        var namespaceValue = !string.IsNullOrEmpty(othersParts) ? $".{othersParts}" : string.Empty;
+                        if (typeDefinition != null){
+                            if(typeDefinition.EndsWith("RequestBody",StringComparison.OrdinalIgnoreCase)){
+                                var namespaceParts = importModelNamespace.Split('.').Select((s, i) => i == import.ModelProperty.NamespaceName.Split('.').Length - 1 ? s.ToSnakeCase() : s.ToLowerInvariant());
+                                var importString = $"{requestBuilderImportPrefix}.{string.Join(".", namespaceParts)}.{typeDefinition.ToSnakeCase()} import {typeDefinition}";
+                                snippetImports.Add($"{importString.Replace(".me.", ".users.item.")}");
+                            }
+                            else{
+                                snippetImports.Add($"{modelImportPrefix}{namespaceValue}.{typeDefinition.ToSnakeCase()} import {typeDefinition}");
+                            }
+                        }
+
+                        if (import.ModelProperty.PropertyType == PropertyType.Enum)
+                        {
+                            var enumName = import.ModelProperty.Value.Split('.').First();
+                            snippetImports.Add(
+                                $"{modelImportPrefix}.{enumName.ToSnakeCase()} import {enumName}");
+                        }
+                        
+                        
+                        break;
+                    case ImportKind.RequestBuilder:
+                        if (!string.IsNullOrEmpty(import.ModelProperty.Name))
+                        {
+                            var namespaceParts = import.ModelProperty.NamespaceName.Split('.').Select((s, i) => i == import.ModelProperty.NamespaceName.Split('.').Length - 1 ? s.ToSnakeCase() : s.ToLowerInvariant());
+                            var importString = $"{requestBuilderImportPrefix}.{string.Join(".", namespaceParts)}.{import.ModelProperty.Name.ToSnakeCase()} import {import.ModelProperty.Name}";
+                            snippetImports.Add(importString.Replace(".me.", ".users.item."));
+                        }
+                        break;
+                    
+
+                    case ImportKind.Path:
+                        if (import.Path != null && import.RequestBuilderName != null)
+                        {
+                            //construct path to request builder
+                            snippetImports.Add($"{requestBuilderImportPrefix}{Regex.Replace(import.Path.Replace(".me.", ".users.item."), @"(\B[A-Z])", "_$1", RegexOptions.Compiled, TimeSpan.FromSeconds(60)).ToLower()}.{import.RequestBuilderName.ToSnakeCase()} import {import.RequestBuilderName}");
+                            snippetImports.Add($"{BaseRequestConfigImport}");
+
+                        }
+                        break;
+                }
+            }
+
+            return snippetImports;
         }
 
         private static void WriteRequestExecutionPath(SnippetCodeGraph codeGraph, StringBuilder snippetBuilder, IndentManager indentManager)
@@ -78,13 +174,17 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
                 ? $"{RequestConfigurationVarName} = {RequestConfigurationVarName}"
                 : string.Empty;
             var bodyParameter = codeGraph.HasBody()
-                ? $"body = {RequestBodyVarName}"
+                ? $"{RequestBodyVarName}"
                 : string.Empty;
+            if (string.IsNullOrEmpty(bodyParameter) && ((codeGraph.RequestSchema?.Properties?.Any() ?? false) || (codeGraph.RequestSchema?.AllOf?.Any(schema => schema.Properties.Any()) ?? false)))
+                bodyParameter = "None";// pass a null parameter if we have a request schema expected but there is not body provided
+
             var optionsParameter = codeGraph.HasOptions() ? "options =" : string.Empty;
             var returnVar = codeGraph.HasReturnedBody() ? "result = " : string.Empty;
+            string pathSegment = $"{ClientVarName}.{GetFluentApiPath(codeGraph.Nodes, codeGraph)}";
             var parameterList = GetActionParametersList(bodyParameter, configParameter, optionsParameter);
             snippetBuilder.AppendLine(GetRequestConfiguration(codeGraph, indentManager));
-            snippetBuilder.AppendLine($"{returnVar}await {ClientVarName}.{GetFluentApiPath(codeGraph.Nodes)}.{method}({parameterList})");
+            snippetBuilder.AppendLine($"{returnVar}await {pathSegment}.{method}({parameterList})");
         }
         private static string GetRequestQueryParameters(SnippetCodeGraph model, IndentManager indentManager, string classNameQueryParameters)
         {
@@ -116,58 +216,60 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
         private static string GetRequestConfiguration(SnippetCodeGraph codeGraph, IndentManager indentManager)
         {
             var snippetBuilder = new StringBuilder();
-            var requestBuilderName = codeGraph.Nodes.Last().GetClassName("RequestBuilder").ToFirstCharacterUpperCase();
-            var className = $"{requestBuilderName}{codeGraph.HttpMethod.Method.ToLowerInvariant().ToFirstCharacterUpperCase()}RequestConfiguration";
-            
-            var classNameQueryParameters = $"{requestBuilderName}.{requestBuilderName}{codeGraph.HttpMethod.Method.ToLowerInvariant().ToFirstCharacterUpperCase()}QueryParameters";
-            
-            var queryParamsPayload = GetRequestQueryParameters(codeGraph, indentManager, classNameQueryParameters);
-            if (codeGraph.HasParameters() || codeGraph.HasHeaders()){
-                snippetBuilder.AppendLine(queryParamsPayload); 
-                snippetBuilder.AppendLine($"{RequestConfigurationVarName} = {requestBuilderName}.{className}(");
-                indentManager.Indent(); 
+            var className = codeGraph.Nodes.Last().GetClassName().ToFirstCharacterUpperCase();
+            var itemSuffix = codeGraph.Nodes.Last().Segment.IsCollectionIndex() ? "Item" : string.Empty;
+            var requestBuilderName = $"{className}{itemSuffix}RequestBuilder";
+            var requestConfigurationName =
+                $"{requestBuilderName}{codeGraph.HttpMethod.Method.ToLowerInvariant().ToFirstCharacterUpperCase()}RequestConfiguration";
 
-                var requestHeadersPayload = GetRequestHeaders(codeGraph, indentManager);
-                if (codeGraph.HasHeaders()){
-                    if(queryParamsPayload != null){
+            var classNameQueryParameters = $"{requestBuilderName}.{requestBuilderName}{codeGraph.HttpMethod.Method.ToLowerInvariant().ToFirstCharacterUpperCase()}QueryParameters";
+
+            var queryParamsPayload = GetRequestQueryParameters(codeGraph, indentManager, classNameQueryParameters);
+            if (codeGraph.HasParameters() || codeGraph.HasHeaders())
+            {
+                snippetBuilder.AppendLine(queryParamsPayload);
+                snippetBuilder.Append($"{RequestConfigurationVarName} = {RequestConfigurationType}(");
+
+                if (codeGraph.HasParameters())
+                {
+                    if (!string.IsNullOrEmpty(queryParamsPayload))
+                    {
+                        snippetBuilder.AppendLine();
+                        indentManager.Indent();
                         snippetBuilder.AppendLine($"query_parameters = {RequestParametersPropertyName},");
+                        indentManager.Unindent();
                     }
-                    snippetBuilder.AppendLine(requestHeadersPayload);
-                    indentManager.Unindent();
-                    snippetBuilder.AppendLine(")");
-                }         
-                if (!codeGraph.HasHeaders()){
-                    snippetBuilder.AppendLine($"query_parameters = {RequestParametersPropertyName},");
-                    indentManager.Unindent();
                     snippetBuilder.AppendLine(")");
                 }
-                
-            }    
+                if (codeGraph.HasHeaders())
+                {
+                    if (!codeGraph.HasParameters())
+                        snippetBuilder.AppendLine(")");
+                    snippetBuilder.AppendLine(GetRequestHeaders(codeGraph));
+                }
+
+            }
             return snippetBuilder.ToString();
         }
-        private static string GetActionParametersList(params string[] parameters) {
+        private static string GetActionParametersList(params string[] parameters)
+        {
             var nonEmptyParameters = parameters.Where(static p => !string.IsNullOrEmpty(p));
             var emptyParameters = nonEmptyParameters.ToList();
-            if(emptyParameters.Any())
+            if (emptyParameters.Count != 0)
                 return string.Join(", ", emptyParameters.Select(static x => $"{x}").Aggregate(static (a, b) => $"{a}, {b}"));
             return string.Empty;
         }
-        
-        private static string GetRequestHeaders(SnippetCodeGraph snippetModel, IndentManager indentManager)
+
+        private static string GetRequestHeaders(SnippetCodeGraph snippetModel)
         {
-            var headersvar = new StringBuilder();
-            if (!snippetModel.HasHeaders())
-                headersvar.AppendLine("headers = {}");
-            headersvar.AppendLine("headers = {");
-            indentManager.Indent();
+            var headersVar = new StringBuilder();
             foreach (var header in snippetModel.Headers)
             {
-                headersvar.AppendLine($"{indentManager.GetIndent()}'{header.Name}' : {EvaluateParameter(header)},");
+                headersVar.AppendLine(
+                    $"{RequestConfigurationVarName}.headers.add(\"{header.Name}\", {EvaluateParameter(header)})");
             }
-            indentManager.Unindent();
-            headersvar.AppendLine("}");
-            return headersvar.ToString();
-    
+            return headersVar.ToString();
+
         }
         private static string NormalizeQueryParameterName(string queryParam) => queryParam?.TrimStart('$').ToFirstCharacterLowerCase();
 
@@ -176,14 +278,13 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
             if (!snippetCodeGraph.HasBody())
                 return;// No body
 
-            if(indentManager == null) 
-                throw new ArgumentNullException(nameof(indentManager));
+            ArgumentNullException.ThrowIfNull(indentManager);
 
             switch (snippetCodeGraph.Body.PropertyType)
             {
                 case PropertyType.Object:
                     snippetBuilder.AppendLine($"{RequestBodyVarName} = {GetTypeString(snippetCodeGraph.Body)}");
-                    snippetCodeGraph.Body.Children.ForEach( child => WriteObjectFromCodeProperty(snippetCodeGraph.Body, child, snippetBuilder, indentManager));
+                    snippetCodeGraph.Body.Children.ForEach(child => WriteObjectFromCodeProperty(snippetCodeGraph.Body, child, snippetBuilder, indentManager));
                     snippetBuilder.AppendLine($"{indentManager.GetIndent()})");
                     break;
                 case PropertyType.Binary:
@@ -194,13 +295,21 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
             }
         }
 
-        private static void WriteObjectFromCodeProperty(CodeProperty parentProperty, CodeProperty codeProperty,StringBuilder snippetBuilder, IndentManager indentManager) 
+        private static void WriteObjectFromCodeProperty(CodeProperty parentProperty, CodeProperty codeProperty, StringBuilder snippetBuilder, IndentManager indentManager, bool fromAdditionalData = false)
         {
             indentManager.Indent();
             var isParentArray = parentProperty.PropertyType == PropertyType.Array;
             var isParentMap = parentProperty.PropertyType == PropertyType.Map;
             var assignmentSuffix = ",";
-            var propertyAssignment = $"{indentManager.GetIndent()}{codeProperty.Name.CleanupSymbolName().ToSnakeCase()} = "; // default assignments to the usual "x = xyz"
+            var propertyName = codeProperty.Name?.CleanupSymbolName()?.ToSnakeCase();
+            fromAdditionalData = fromAdditionalData || (propertyName != null &&
+                                                        propertyName.Equals("additional_data",
+                                                            StringComparison.OrdinalIgnoreCase));
+            if (fromAdditionalData && codeProperty.PropertyType == PropertyType.Object)
+            {
+                codeProperty.PropertyType = PropertyType.Map;
+            }
+            var propertyAssignment = $"{indentManager.GetIndent()}{propertyName} = "; // default assignments to the usual "x = xyz"
             if (isParentMap)
             {
                 propertyAssignment = $"{indentManager.GetIndent()}\"{codeProperty.Name.ToSnakeCase()}\" : "; // if its in the additionalData assignments happen using string value keys
@@ -214,7 +323,7 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
             {
                 case PropertyType.Object:
                     snippetBuilder.AppendLine($"{propertyAssignment}{GetTypeString(codeProperty)}");
-                    codeProperty.Children.ForEach( child => WriteObjectFromCodeProperty(codeProperty, child, snippetBuilder, indentManager));
+                    codeProperty.Children.ForEach(child => WriteObjectFromCodeProperty(codeProperty, child, snippetBuilder, indentManager, fromAdditionalData));
                     snippetBuilder.AppendLine($"{indentManager.GetIndent()}){assignmentSuffix}");
                     break;
                 case PropertyType.Map:
@@ -222,18 +331,18 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
                     indentManager.Indent();
                     codeProperty.Children.ForEach(child =>
                     {
-                        WriteObjectFromCodeProperty(codeProperty, child, snippetBuilder, indentManager);
+                        WriteObjectFromCodeProperty(codeProperty, child, snippetBuilder, indentManager, fromAdditionalData);
                     });
                     indentManager.Unindent();
-                    snippetBuilder.AppendLine($"{indentManager.GetIndent()}}}");
+                    snippetBuilder.AppendLine($"{indentManager.GetIndent()}}}{((isParentArray || isParentMap) ? "," : string.Empty)}");
                     break;
-                case PropertyType.Array :
+                case PropertyType.Array:
                     snippetBuilder.AppendLine($"{propertyAssignment}{GetTypeString(codeProperty)}");
                     codeProperty.Children.ForEach(child =>
                     {
-                        WriteObjectFromCodeProperty(codeProperty, child, snippetBuilder, indentManager);
+                        WriteObjectFromCodeProperty(codeProperty, child, snippetBuilder, indentManager, fromAdditionalData);
                     });
-                    snippetBuilder.AppendLine($"{indentManager.GetIndent()}]");
+                    snippetBuilder.AppendLine($"{indentManager.GetIndent()}],");
                     break;
                 case PropertyType.Guid:
                     snippetBuilder.AppendLine($"{propertyAssignment}UUID(\"{codeProperty.Value}\"){assignmentSuffix}");
@@ -243,12 +352,12 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
                     break;
                 case PropertyType.Enum:
                     var enumTypeString = GetTypeString(codeProperty);
-                    var enumValues = codeProperty.Value.Split(new []{'|',','}, StringSplitOptions.RemoveEmptyEntries)
+                    var enumValues = codeProperty.Value.Split(new[] { '|', ',' }, StringSplitOptions.RemoveEmptyEntries)
                         .Select(x =>
                         {
                             var enumHint = x.Split('.').Last().Trim();
                             // the enum member may be invalid so default to generating the first value in case a look up fails.
-                            var enumMember = codeProperty.Children.FirstOrDefault( member => member.Value.Equals(enumHint,StringComparison.OrdinalIgnoreCase)).Value ?? codeProperty.Children.FirstOrDefault().Value ?? enumHint;
+                            var enumMember = codeProperty.Children.FirstOrDefault(member => member.Value.Equals(enumHint, StringComparison.OrdinalIgnoreCase)).Value ?? codeProperty.Children.FirstOrDefault().Value ?? enumHint;
                             return $"{enumTypeString.TrimEnd('?')}.{enumMember.ToFirstCharacterUpperCase()}";
                         })
                         .Aggregate(static (x, y) => $"{x} | {y}");
@@ -301,39 +410,55 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
         private static string ReplaceIfReservedTypeName(string originalString, string suffix = "_")
             => ReservedTypeNames.Contains(originalString) ? $"{originalString}{suffix}" : originalString;
 
-        private static string GetFluentApiPath(IEnumerable<OpenApiUrlTreeNode> nodes)
+        private static string GetFluentApiPath(IEnumerable<OpenApiUrlTreeNode> nodes, SnippetCodeGraph snippetCodeGraph, bool useIndexerNamespaces = false)
         {
-            if (!(nodes?.Any() ?? false)) return string.Empty;
-            var elements = nodes.Select(static (x, i) =>
+            if (!(nodes?.Any() ?? false))
+                return string.Empty;
+
+            return nodes.Select(x =>
+            {
+                if (x.Segment.IsCollectionIndex())
                 {
-                    if (x.Segment.IsCollectionIndex())
-                        return $"by_type_id{x.Segment.Replace("{", "('").Replace("}", "')")}";
-                    else if (x.Segment.IsFunction())
-                        return x.Segment.Replace(".", "_").RemoveFunctionBraces().Split('.')
-                            .Select(static s => s.ToSnakeCase())
-                            .Aggregate(static (a, b) => $"{a}{b}");
-                    return x.Segment.ReplaceValueIdentifier().TrimStart('$').RemoveFunctionBraces()
+                    var collectionIndexName = x.Segment.Replace("{", "").Replace("}", "");
+                    var fluentMethodName = collectionIndexName.Split("-").Select(static x => x.ToSnakeCase()).Aggregate(static (a, b) => a + $"_{b}");
+                    return $"by_{fluentMethodName}('{collectionIndexName}')";
+                }
+                if (x.Segment.IsFunctionWithParameters())
+                {
+                    var functionName = x.Segment.Split('(').First();
+                    functionName = functionName.Split(".", StringSplitOptions.RemoveEmptyEntries)
+                                                .Select(static s => s.ToFirstCharacterUpperCase())
+                                                .Aggregate(static (a, b) => $"{a}{b}")
+                                                .ToSnakeCase();
+                    var parameters = snippetCodeGraph.PathParameters
+                        .Select(static s => $"_with_{s.Name.ToSnakeCase()}")
+                        .Aggregate(static (a, b) => $"{a}{b}");
+
+                    // use the existing WriteObjectFromCodeProperty functionality to write the parameters as if they were a comma seperated array so as to automatically infer type handling from the codeDom :)
+                    var parametersBuilder = new StringBuilder();
+                    foreach (var codeProperty in snippetCodeGraph.PathParameters.OrderBy(static parameter => parameter.Name, StringComparer.OrdinalIgnoreCase))
+                    {
+                        var parameter = new StringBuilder();
+                        WriteObjectFromCodeProperty(new CodeProperty { PropertyType = PropertyType.Array }, codeProperty, parameter, new IndentManager());
+                        parametersBuilder.Append(parameter.ToString().Trim());//Do this to trim the surrounding whitespace generated
+                    }
+
+                    return functionName
+                           + parameters
+                           + $"({parametersBuilder.ToString().TrimEnd(',')})";
+                }
+                if (x.Segment.IsFunction())
+                    return x.Segment.RemoveFunctionBraces().Split('.')
+                        .Select(static s => s.ToFirstCharacterUpperCase())
+                        .Aggregate(static (a, b) => $"{a}{b}")
                         .ToSnakeCase();
-                })
-                .Aggregate(new List<String>(), (current, next) =>
-                {
-                    var element = next.Contains("by_type_id", StringComparison.OrdinalIgnoreCase)
-                        ? next.Replace("by_type_id",
-                            $"by_{current.Last().Replace("s().", string.Empty, StringComparison.OrdinalIgnoreCase)}_id")
-                        : $"{next.Replace("$", string.Empty, StringComparison.OrdinalIgnoreCase).ToFirstCharacterLowerCase()}";
-
-                    current.Add(element);
-                    return current;
-                }).Aggregate(static (x, y) =>
-                {
-                    return $"{x.Trim('$').Replace("s_", "_")}.{y.Trim('$', '.').Replace("()", string.Empty).Replace("s_", "_")}";
-                }).Replace("..", ".")
-                .Replace("().", ".")
-                .Replace("()().", ".");
-                
-
-            return string.Join("", elements).Replace("()()", "()");
-
+                return x.Segment.ReplaceValueIdentifier().TrimStart('$').RemoveFunctionBraces().ToSnakeCase();
+            })
+                                .Aggregate(static (x, y) =>
+                                {
+                                    var dot = y.StartsWith("[") ? string.Empty : ".";
+                                    return $"{x}{dot}{y}";
+                                });
         }
     }
 }

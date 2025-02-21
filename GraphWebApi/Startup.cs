@@ -9,8 +9,6 @@ using Microsoft.Extensions.DependencyInjection;
 using FileService.Interfaces;
 using FileService.Services;
 using Serilog;
-using ChangesService.Services;
-using ChangesService.Interfaces;
 using Microsoft.Extensions.Hosting;
 using Microsoft.ApplicationInsights.Extensibility.PerfCounterCollector.QuickPulse;
 using System.Globalization;
@@ -27,22 +25,13 @@ using PermissionsService.Interfaces;
 using SamplesService.Interfaces;
 using PermissionsService;
 using SamplesService.Services;
-using TourStepsService.Interfaces;
-using TourStepsService.Services;
+using System.Text.Json;
 
 namespace GraphWebApi
 {
-    public class Startup
+    public class Startup(IConfiguration configuration, IWebHostEnvironment hostingEnvironment)
     {
-        public Startup(IConfiguration configuration, IWebHostEnvironment hostingEnvironment)
-        {
-            Configuration = configuration;
-            _env = hostingEnvironment;
-        }
-
-        public IConfiguration Configuration { get; }
-
-        private readonly IWebHostEnvironment _env;
+        public IConfiguration Configuration { get; } = configuration;
 
         // This method gets called by the runtime. Use this method to add services to the container.
         public void ConfigureServices(IServiceCollection services)
@@ -63,7 +52,7 @@ namespace GraphWebApi
             });
             services.AddApplicationInsightsTelemetryProcessor<CustomPIIFilter>();
 
-            if (!_env.IsDevelopment())
+            if (!hostingEnvironment.IsDevelopment())
             {
                 services.ConfigureTelemetryModule<QuickPulseTelemetryModule>((module, o) =>
                     module.AuthenticationApiKey = Configuration["ApplicationInsights:AppInsightsApiKey"]);
@@ -77,13 +66,15 @@ namespace GraphWebApi
             services.AddSingleton<IFileUtility, AzureBlobStorageUtility>();
             services.AddSingleton<IPermissionsStore, PermissionsStore>();
             services.AddSingleton<ISamplesStore, SamplesStore>();
-            services.AddSingleton<IChangesService, ChangesService.Services.ChangesService>();
-            services.AddSingleton<IChangesStore, ChangesStore>();
             services.AddSingleton<IOpenApiService, OpenApiService>();
             services.AddSingleton<IKnownIssuesService, KnownIssuesService.Services.KnownIssuesService>();
             services.AddHttpClient<IHttpClientUtility, HttpClientUtility>();
-            services.AddControllers().AddNewtonsoftJson();
-            services.AddSingleton<ITourStepsStore, TourStepsStore>();
+            services.AddControllers().AddJsonOptions(options =>
+            {
+                options.JsonSerializerOptions.WriteIndented = true;
+                options.JsonSerializerOptions.AllowTrailingCommas = true;
+                options.JsonSerializerOptions.ReadCommentHandling = JsonCommentHandling.Skip;
+            });
 
             // Localization
             services.Configure<RequestLocalizationOptions>(options =>
@@ -129,7 +120,6 @@ namespace GraphWebApi
             var localizationOptions = app.ApplicationServices.GetService<IOptions<RequestLocalizationOptions>>().Value;
             app.UseRequestLocalization(localizationOptions);
 
-            app.ApplicationServices.GetRequiredService<IChangesService>();
             app.ApplicationServices.GetRequiredService<IOpenApiService>();
 
             app.UseEndpoints(endpoints =>

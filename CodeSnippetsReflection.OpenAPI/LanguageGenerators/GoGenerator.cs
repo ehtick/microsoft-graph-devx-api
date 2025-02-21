@@ -1,21 +1,18 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Collections.Immutable;
+using System.Linq;
 using System.Text;
+using System.Text.RegularExpressions;
 using CodeSnippetsReflection.OpenAPI.ModelGraph;
 using CodeSnippetsReflection.StringExtensions;
 using Microsoft.OpenApi.Services;
-using System.Text.RegularExpressions;
-using System.Collections;
 
 namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 {
     public class GoGenerator : ILanguageGenerator<SnippetModel, OpenApiUrlTreeNode>
     {
         private const string clientVarName = "graphClient";
-        private const string clientVarType = "GraphServiceClientWithCredentials";
-        private const string clientFactoryVariables = "cred, scopes";
         private const string requestBodyVarName = "requestBody";
         private const string requestHeadersVarName = "headers";
         private const string optionsParameterVarName = "options";
@@ -28,6 +25,10 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
         private static IImmutableSet<string> NativeTypes = GetNativeTypes();
 
         private static readonly Regex PropertyNameRegex = new Regex(@"@(.*)", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
+
+        private static readonly Regex FunctionRegex = new Regex(@"(\w+)\(([^)]*)\)", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
+
+        private static readonly Regex ParamRegex = new Regex(@"(\w+)\s*=\s*'[^']*'", RegexOptions.Compiled, TimeSpan.FromMilliseconds(200));
 
         static IImmutableSet<string> GetNativeTypes()
         {
@@ -45,10 +46,14 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 
         public string GenerateCodeSnippet(SnippetModel snippetModel)
         {
-            if (snippetModel == null) throw new ArgumentNullException("Argument snippetModel cannot be null");
+            ArgumentNullException.ThrowIfNull(snippetModel);
 
             var codeGraph = new SnippetCodeGraph(snippetModel);
             var snippetBuilder = new StringBuilder();
+            snippetBuilder.AppendLine("");
+
+            var latestMajorVersion = "v1.0".Equals(codeGraph.ApiVersion) ? "v1.*" : "v0.*";
+            snippetBuilder.AppendLine($"// Code snippets are only available for the latest major version. Current major version is ${latestMajorVersion}");
             snippetBuilder.AppendLine("");
 
             writeImportStatements(codeGraph, snippetBuilder);
@@ -59,6 +64,7 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 
         private static void writeImportStatements(SnippetCodeGraph codeGraph, StringBuilder builder)
         {
+            builder.AppendLine("// Dependencies");
             var apiVersion = "v1.0".Equals(codeGraph.ApiVersion) ? "msgraph-sdk-go" : "msgraph-beta-sdk-go";
             builder.AppendLine("import (");
             builder.AppendLine("\t  \"context\""); // default
@@ -137,9 +143,24 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 
         private static String ProcessNameSpaceName(String nameSpace)
         {
-            return (nameSpace != null ? nameSpace.Split(".", StringSplitOptions.RemoveEmptyEntries)
+            if (String.IsNullOrEmpty(nameSpace))
+                return "";
+
+            // process function names and parameters
+            var functionNameMatch = FunctionRegex.Match(nameSpace);
+            if (functionNameMatch.Success)
+            {
+                var paramMatches = ParamRegex.Matches(functionNameMatch.Groups[2].Value);
+                var paramNames = paramMatches.Cast<Match>().Select(static m => m.Groups[1].Value).ToList();
+
+                return functionNameMatch.Groups[1].Value + "With" + string.Join("With", paramNames);
+            }
+
+            var processedName = (nameSpace.Split(".", StringSplitOptions.RemoveEmptyEntries)
                 .Select(x => x.Equals("Me", StringComparison.OrdinalIgnoreCase) ? "Users" : x)
-                .Aggregate((current, next) => current + "." + next) : "models").Replace(".microsoft.graph", "");
+                .Aggregate(static (current, next) => current + "." + next)).Replace(".microsoft.graph", "");
+
+            return processedName;
         }
 
         private static String ProcessFinalNameSpaceName(String nameSpace)
@@ -175,7 +196,7 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 
         private static Boolean searchProperty(CodeProperty property, PropertyType propertyType)
         {
-            if (property.Children != null && property.Children.Any())
+            if (property.Children != null && property.Children.Count != 0)
             {
                 var existingChild = property.Children.FirstOrDefault(x => x.PropertyType == propertyType);
                 return propertyType == existingChild.PropertyType;
@@ -185,11 +206,11 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 
         private static void writeSnippet(SnippetCodeGraph codeGraph, StringBuilder builder)
         {
-            builder.AppendLine($"{clientVarName} := msgraphsdk.New{clientVarType}({clientFactoryVariables}){Environment.NewLine}{Environment.NewLine}");
             writeHeadersAndOptions(codeGraph, builder);
             WriteBody(codeGraph, builder);
             builder.AppendLine("");
 
+            builder.AppendLine("// To initialize your graphClient, see https://learn.microsoft.com/en-us/graph/sdks/create-client?from=snippets&tabs=go");
             WriteExecutionStatement(
                 codeGraph,
                 builder,
@@ -289,26 +310,44 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 
         private static string GetNestedObjectName(IEnumerable<OpenApiUrlTreeNode> nodes)
         {
-            if (!(nodes?.Any() ?? false)) return string.Empty;
-            // if the first element is a collection index skip it
-            var isCollection = nodes.First().Segment.IsCollectionIndex();
-            var isSingleElement = nodes.Count() == 1;
+            var enumeratedNodes = nodes?.ToList() ?? new List<OpenApiUrlTreeNode>();
+            if (enumeratedNodes.Count == 0) return string.Empty;
 
-            var filteredNodes = (isCollection && !isSingleElement) ? nodes.Skip(2) : isCollection ? nodes.Skip(1) : nodes; // skip first element if its not only element
-            if (!(filteredNodes?.Any() ?? false)) return string.Empty;
-            return filteredNodes.Select(static x =>
-            {
-                if (x.Segment.IsCollectionIndex())
-                    return "Item";
-                else
-                    return x.Segment.ToFirstCharacterUpperCase();
-            })
-                        .Aggregate(static (x, y) =>
+            // if the first element is a collection index skip it
+            var isCollection = enumeratedNodes[0].Segment.IsCollectionIndex();
+            var isSingleElement = enumeratedNodes.Count == 1;
+            var elementCount = enumeratedNodes.Count; // check if its a nested element
+
+            var filteredNodes = enumeratedNodes;
+            if (isCollection && !isSingleElement)
+                filteredNodes = enumeratedNodes.Skip(2).ToList();
+            else if (isCollection || elementCount > 2)
+                filteredNodes = enumeratedNodes.Skip(1).ToList();
+
+            if (filteredNodes.Count == 0) return string.Empty;
+            return filteredNodes.Select(static x => x.Segment.IsCollectionIndex() ? "Item" : EscapeFunctionNames(x.Segment.ToFirstCharacterUpperCase()))
+                        .Aggregate((x, y) =>
                         {
-                            var w = x.EndsWith("s") && y.Equals("Item") ? x.Remove(x.Length - 1, 1) : x;
+                            var w = elementCount < 3 && x.EndsWith('s') && y.Equals("Item") ? x.Remove(x.Length - 1, 1) : x;
                             w = "Me".Equals(w, StringComparison.Ordinal) ? "Item" : w;
                             return $"{w}{y}";
                         });
+        }
+
+        private static string EscapeFunctionNames(String objectName)
+        {
+            if (String.IsNullOrEmpty(objectName))
+                return objectName;
+
+            var match = FunctionRegex.Match(objectName);
+            if (match.Success)
+            {
+                var paramMatches = ParamRegex.Matches(match.Groups[2].Value);
+                var paramNames = paramMatches.Cast<Match>().Select(static m => m.Groups[1].Value.ToFirstCharacterUpperCase()).ToList();
+
+                return paramNames.Count > 0 ? match.Groups[1].Value + "With" + string.Join("With", paramNames) : match.Groups[1].Value;
+            }
+            return objectName;
         }
 
         private static string evaluateParameter(CodeProperty param)
@@ -336,8 +375,7 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 
         private static void WriteExecutionStatement(SnippetCodeGraph codeGraph, StringBuilder builder, params string[] parameters)
         {
-            var methodName = $"{codeGraph.HttpMethod.ToString().ToLowerInvariant().ToFirstCharacterUpperCase()}";
-
+            var methodName = codeGraph.GetSchemaFunctionCallPrefix();
             var parametersList = GetActionParametersList(parameters);
             var resultVarName = GetResultVarName(codeGraph);
             var returnStatement = codeGraph.HasReturnedBody() ? $"{resultVarName}, err := " : "";
@@ -538,7 +576,7 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
             if (isArray || String.IsNullOrWhiteSpace(propName))
                 builder.AppendLine($"{indentManager.GetIndent()}\"{child.Value}\",");
             else if (isMap)
-                builder.AppendLine($"{indentManager.GetIndent()}{propertyName.AddQuotes()} : \"{child.Value}\", ");
+                builder.AppendLine($"{indentManager.GetIndent()}{child.Name.AddQuotes()} : \"{child.Value}\", ");
             else
             {
                 builder.AppendLine($"{propertyName} := \"{child.Value}\"");
@@ -597,7 +635,7 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
                 string varNames = String.Join(", ", funcWithParams.Item3.Keys.Select(item => "&" + item));
                 return $"{funcWithParams.Item2.ToFirstCharacterUpperCase()}{withNames}({varNames}).";
 
-                
+
             })
                         .Aggregate(new List<String>(), (current, next) =>
                         {

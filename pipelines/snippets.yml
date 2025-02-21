@@ -17,12 +17,12 @@ resources:
  repositories:
    - repository: microsoft-graph-docs
      type: github
-     endpoint: microsoftgraph
+     endpoint: microsoftgraph (22)
      name: microsoftgraph/microsoft-graph-docs
      ref: main
 
 pool:
-  vmImage: 'ubuntu-latest'
+  name: 1es-ubuntu-latest-m
 
 
 parameters:
@@ -70,9 +70,9 @@ stages:
         version: 6.x
 
     - task: UseDotNet@2
-      displayName: 'Install .NET Core SDK 7'
+      displayName: 'Install .NET Core SDK 8'
       inputs:
-        version: 7.0.x
+        version: 8.0.x
 
     - task: DotNetCoreCLI@2
       displayName: 'Build snippet generator'
@@ -126,18 +126,97 @@ stages:
   - job: RunTests
     strategy:
       matrix:
-        'HTTP v1':
+        'HTTP v1 Stable':
           SNIPPET_LANGUAGE: 'http'
           GRAPH_VERSION: 'v1'
-        'HTTP beta':
+          TEST_CATEGORY: 'Stable'
+        'HTTP v1 KnownIssues':
+          SNIPPET_LANGUAGE: 'http'
+          GRAPH_VERSION: 'v1'
+          TEST_CATEGORY: 'KnownIssues'
+        'HTTP beta Stable':
           SNIPPET_LANGUAGE: 'http'
           GRAPH_VERSION: 'beta'
+          TEST_CATEGORY: 'Stable'
+        'HTTP beta KnownIssues':
+          SNIPPET_LANGUAGE: 'http'
+          GRAPH_VERSION: 'beta'
+          TEST_CATEGORY: 'KnownIssues'
         ${{ each language in parameters.snippetLanguages }}:
-          '${{ language }} v1':
+          '${{ language }} v1 Stable':
             SNIPPET_LANGUAGE: ${{ lower(language) }}
             GRAPH_VERSION: 'v1'
-          '${{ language }} beta':
+            TEST_CATEGORY: 'Stable'
+          '${{ language }} v1 KnownIssues':
+            SNIPPET_LANGUAGE: ${{ lower(language) }}
+            GRAPH_VERSION: 'v1'
+            TEST_CATEGORY: 'KnownIssues'
+          '${{ language }} beta Stable':
             SNIPPET_LANGUAGE: ${{ lower(language) }}
             GRAPH_VERSION: 'beta'
+            TEST_CATEGORY: 'Stable'
+          '${{ language }} beta KnownIssues':
+            SNIPPET_LANGUAGE: ${{ lower(language) }}
+            GRAPH_VERSION: 'beta'
+            TEST_CATEGORY: 'KnownIssues'
     steps:
     - template: templates/run-tests.yml
+- stage: GenerateRunTestReports
+  dependsOn: RunTests
+  displayName: GenerateRunTestReports
+  jobs:
+  - job: GenerateCategorizationReport
+    steps:
+      - checkout: self
+        displayName: checkout GE api
+        fetchDepth: 1
+        submodules: recursive
+        persistCredentials: true
+
+      - task: DownloadPipelineArtifact@2
+        displayName: 'Download RunTests artifact'
+        inputs:
+          artifact: 'Generation Test Results'
+          path: '$(Build.ArtifactStagingDirectory)/TestResults'
+
+      - pwsh: |
+          Write-Host "Installing module ImportExcel"
+          Install-Module -Name ImportExcel -Scope CurrentUser -Force -AllowClobber
+          Write-Host "Installing module Microsoft.Graph"
+          Install-Module Microsoft.Graph -Repository PSGallery -Scope CurrentUser -AcceptLicense -Force -AllowClobber
+          Write-Host "Finished installing dependencies"
+        displayName: Install script dependencies
+        workingDirectory: '$(Build.SourcesDirectory)'
+
+      - pwsh: |
+          Write-Host "Creating folder Reports"
+          New-Item -Path $(Build.SourcesDirectory) -Name "Reports" -ItemType "Directory" -Force
+        displayName: Create requisite directory items
+
+      - task: AzurePowerShell@5
+        inputs:
+          azureSubscription: "Federated Raptor Managed Identity Connection"
+          ScriptType: "FilePath"
+          ScriptPath: "$(Build.SourcesDirectory)/scripts/categorizeErrors.ps1"
+          ScriptArguments: "
+            -trxFolderPath '$(Build.ArtifactStagingDirectory)/TestResults/' 
+            -reportOutputPath '$(Build.ArtifactStagingDirectory)/Reports/'
+            -snippetsBaseErrorPath '$(Build.ArtifactStagingDirectory)'
+            "
+          workingDirectory: '$(Build.SourcesDirectory)'
+          pwsh: true
+          azurePowerShellVersion: latestVersion
+          failOnStandardError: true
+        displayName: Generate error category report
+        env:
+          RAPTOR_CONFIGENDPOINT: $(RAPTOR_CONFIGENDPOINT)
+          RAPTOR_CONFIGMANAGEDIDENTITY_ID: $(RAPTOR_CONFIGMANAGEDIDENTITY_ID)
+          WorkingDirectory: '$(Build.SourcesDirectory)'
+        continueOnError: true
+
+      - task: PublishBuildArtifacts@1
+        displayName: 'Publish categorization report as artifact'
+        inputs:
+          PathtoPublish: '$(Build.ArtifactStagingDirectory)/Reports/'
+          ArtifactName: 'ErrorCategorizationReport'
+          publishLocation: 'Container'

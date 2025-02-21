@@ -6,6 +6,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Json;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -15,23 +16,16 @@ using Microsoft.OpenApi.Services;
 
 namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 {
-    public class PowerShellGenerator : ILanguageGenerator<SnippetModel, OpenApiUrlTreeNode>
+    public class PowerShellGenerator(IList<PowerShellCommandInfo> psCommands)
+        : ILanguageGenerator<SnippetModel, OpenApiUrlTreeNode>
     {
         private const string requestBodyVarName = "params";
         private const string modulePrefix = "Microsoft.Graph";
-        private const string mgCommandMetadataUrl = "https://raw.githubusercontent.com/microsoftgraph/msgraph-sdk-powershell/dev/src/Authentication/Authentication/custom/common/MgCommandMetadata.json";
-        private static readonly SimpleLazy<IList<PowerShellCommandInfo>> psCommands = new(
-            () =>
-            {
-                using var httpClient = new HttpClient();
-                using var stream = httpClient.GetStreamAsync(mgCommandMetadataUrl).GetAwaiter().GetResult();
-                return JsonSerializer.Deserialize<IList<PowerShellCommandInfo>>(stream);
-            }
-        );
         private static readonly Regex meSegmentRegex = new("^/me($|(?=/))", RegexOptions.Compiled, TimeSpan.FromSeconds(5));
         private static readonly Regex encodedQueryParamsPayLoad = new(@"\w*\+", RegexOptions.Compiled, TimeSpan.FromSeconds(5));
         private static readonly Regex wrongQoutesInStringLiterals = new(@"""\{", RegexOptions.Compiled, TimeSpan.FromSeconds(5));
         private static readonly Regex functionWithParams = new(@"^[0-9a-zA-Z\- \/_?:.,\s]+\([\w*='{\w*}\',]*\)|^[0-9a-zA-Z\- \/_?:.,\s]+\([\w*='\w*\',]*\)|^[0-9a-zA-Z\- \/_?:.,\s]+\([\w*={w*},]*\)|^[0-9a-zA-Z\- \/_?:.,\s]+\([\w*=<w*>,]*\)", RegexOptions.Compiled, TimeSpan.FromSeconds(5));
+
         public string GenerateCodeSnippet(SnippetModel snippetModel)
         {
             var indentManager = new IndentManager();
@@ -188,7 +182,7 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
 
                         string quotedString = collection.Count > 0 ? collection.First().Value : string.Empty;
                         headerValue = (!string.IsNullOrEmpty(quotedString) && !string.IsNullOrEmpty(headerValue)) ? headerValue.Replace(quotedString, "'" + quotedString + "'") : headerValue;
-            
+
                         payloadSB.AppendLine($" -{headerName} {headerValue} ");
                     }
                 }
@@ -265,7 +259,7 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
         {
             var replacements = new Dictionary<string, string>();
             var matches = nestedStatementRegex.Matches(queryParams);
-            if (matches.Any())
+            if (matches.Count != 0)
                 foreach (GroupCollection groupCollection in matches.Select(x => x.Groups))
                 {
                     var key = groupCollection[1].Value;
@@ -277,14 +271,14 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
         }
 
         private static readonly Regex keyIndexRegex = new(@"(?<={)(.*?)(?=})", RegexOptions.Compiled, TimeSpan.FromSeconds(5));
-        private static IList<PowerShellCommandInfo> GetCommandForRequest(string path, string method, string apiVersion)
+        private List<PowerShellCommandInfo> GetCommandForRequest(string path, string method, string apiVersion)
         {
-            if (psCommands.Value.Count == 0)
-                return default;
+            if (psCommands.Count == 0)
+                return [];
             path = Regex.Escape(SnippetModel.TrimNamespace(path));
             // Tokenize uri by substituting parameter values with "{.*}" e.g, "/users/{user-id}" to "/users/{.*}".
             path = $"^{keyIndexRegex.Replace(path, "(\\w*-\\w*|\\w*)")}$";
-            return psCommands.Value.Where(c => c.Method == method && c.ApiVersion == apiVersion && Regex.Match(c.Uri,
+            return psCommands.Where(c => c.Method == method && c.ApiVersion == apiVersion && Regex.Match(c.Uri,
                 path, RegexOptions.None, TimeSpan.FromSeconds(5)).Success).ToList();
         }
         private static (string, string) GetRequestPayloadAndVariableName(SnippetModel snippetModel, IndentManager indentManager)
@@ -292,19 +286,23 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
             if (string.IsNullOrWhiteSpace(snippetModel?.RequestBody)
                 || "undefined".Equals(snippetModel?.RequestBody, StringComparison.OrdinalIgnoreCase)) // graph explorer sends "undefined" as request body for some reason
                 return (default, default);
-            if (indentManager == null) throw new ArgumentNullException(nameof(indentManager));
+
+            ArgumentNullException.ThrowIfNull(indentManager);
+
+            if (isValidJson(snippetModel?.RequestBody) && string.IsNullOrWhiteSpace(snippetModel?.ContentType))
+            {
+                snippetModel.ContentType = "application/json";
+            }
 
             var payloadSB = new StringBuilder();
             switch (snippetModel.ContentType?.Split(';').First().ToLowerInvariant())
             {
                 case "application/json":
-                    using (var parsedBody = JsonDocument.Parse(snippetModel.RequestBody, new JsonDocumentOptions { AllowTrailingCommas = true }))
-                    {
-                        var schema = snippetModel.RequestSchema;
-                        payloadSB.AppendLine($"{indentManager.GetIndent()}${requestBodyVarName} = @{{");
-                        WriteJsonObjectValue(payloadSB, parsedBody.RootElement, schema, indentManager);
-                        payloadSB.AppendLine("}");
-                    }
+                    var parsedBody = JsonSerializer.Deserialize<JsonElement>(snippetModel.RequestBody, JsonHelper.JsonSerializerOptions);
+                    var schema = snippetModel.RequestSchema;
+                    payloadSB.AppendLine($"{indentManager.GetIndent()}${requestBodyVarName} = @{{");
+                    WriteJsonObjectValue(payloadSB, parsedBody, schema, indentManager);
+                    payloadSB.AppendLine("}");
                     break;
                 case "image/jpeg":
                     payloadSB.AppendLine($"{indentManager.GetIndent()}${requestBodyVarName} = Binary data for the image");
@@ -321,6 +319,19 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
             return (payloadSB.ToString(), $"-BodyParameter ${requestBodyVarName}");
         }
 
+        private static bool isValidJson(string requestBody)
+        {
+            try
+            {
+                JsonSerializer.Deserialize<JsonElement>(requestBody, JsonHelper.JsonSerializerOptions);
+                return true;
+            }
+            catch (Exception)
+            {
+                return false;
+            }
+        }
+
         private static void WriteJsonObjectValue(StringBuilder payloadSB, JsonElement value, OpenApiSchema schema, IndentManager indentManager, bool includePropertyAssignment = true)
         {
             if (value.ValueKind != JsonValueKind.Object) throw new InvalidOperationException($"Expected JSON object and got {value.ValueKind}");
@@ -334,6 +345,8 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
                 if (Regex.IsMatch(propertyName, "\\W", RegexOptions.None, TimeSpan.FromSeconds(5))) { propertyName = $"\"{propertyName}\""; }
                 var propertyAssignment = includePropertyAssignment ? $"{indentManager.GetIndent()}{propertyName} = " : string.Empty;
                 WriteProperty(payloadSB, propertyAndSchema.Item1.Value, propertyAndSchema.Item2, indentManager, propertyAssignment);
+
+
             }
             indentManager.Unindent();
         }
@@ -361,13 +374,9 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
                     payloadSB.AppendLine($"{propertyAssignment}$null{propertySuffix}");
                     break;
                 case JsonValueKind.Object:
-                    // OpenTypes will have a null propSchemas. Lets see if the object contains '@odata.type'.
-                    if (propSchema != null || value.ToString().Contains("@odata.type"))
-                    {
-                        payloadSB.AppendLine($"{propertyAssignment}@{{");
-                        WriteJsonObjectValue(payloadSB, value, propSchema, indentManager);
-                        payloadSB.AppendLine($"{indentManager.GetIndent()}}}{propertySuffix}");
-                    }
+                    payloadSB.AppendLine($"{propertyAssignment}@{{");
+                    WriteJsonObjectValue(payloadSB, value, propSchema, indentManager);
+                    payloadSB.AppendLine($"{indentManager.GetIndent()}}}{propertySuffix}");
                     break;
                 case JsonValueKind.Array:
                     WriteJsonArrayValue(payloadSB, value, propSchema, indentManager, propertyAssignment);
@@ -380,11 +389,26 @@ namespace CodeSnippetsReflection.OpenAPI.LanguageGenerators
         private static void WriteJsonArrayValue(StringBuilder payloadSB, JsonElement value, OpenApiSchema schema, IndentManager indentManager, string propertyAssignment)
         {
             payloadSB.AppendLine($"{propertyAssignment}@(");
-            indentManager.Indent();
+
             foreach (var item in value.EnumerateArray())
-                WriteProperty(payloadSB, item, schema?.Items, indentManager, indentManager.GetIndent());
-            indentManager.Unindent();
+            {
+                if (item.ValueKind == JsonValueKind.Object)
+                {
+                    indentManager.Indent(1);
+                    payloadSB.AppendLine($"{indentManager.GetIndent()}@{{");
+                    WriteJsonObjectValue(payloadSB, item, schema?.Items, indentManager);
+                    payloadSB.AppendLine($"{indentManager.GetIndent()}}}");
+
+                }
+                else
+                {
+                    WriteProperty(payloadSB, item, schema?.Items, indentManager, indentManager.GetIndent());
+
+                }
+                indentManager.Indent(-1);
+            }
             payloadSB.AppendLine($"{indentManager.GetIndent()})");
+
         }
 
         private static string GetNumberLiteral(OpenApiSchema schema, JsonElement value)

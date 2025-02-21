@@ -25,11 +25,11 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task GetAllRequiredPermissionScopesGivenAnExistingRequestUrl()
+        public async Task GetAllRequiredPermissionScopesGivenAnExistingRequestUrlAsync()
         {
             // Act
             var result = await _permissionsStore.GetScopesAsync(
-                requests: new List<RequestInfo> { new RequestInfo { RequestUrl = "/security/alerts/{alert_id}", HttpMethod = "GET" } });
+                requests: new List<RequestInfo> { new RequestInfo { RequestUrl = "/security/alerts/{id}", HttpMethod = "GET" } }, leastPrivilegeOnly: false);
 
             // Assert
             Assert.Collection(result.Results,
@@ -79,11 +79,11 @@ namespace PermissionsService.Test
         [InlineData(ScopeType.DelegatedWork)]
         [InlineData(ScopeType.DelegatedPersonal)]
         [InlineData(ScopeType.Application)]
-        public async Task GetRequiredPermissionScopesGivenAnExistingRequestUrlByScopeType(ScopeType scopeType)
+        public async Task GetRequiredPermissionScopesGivenAnExistingRequestUrlByScopeTypeAsync(ScopeType scopeType)
         {
             // Act
             var result = await _permissionsStore.GetScopesAsync(
-                new List<RequestInfo> { new RequestInfo { RequestUrl = "/security/alerts/{alert_id}", HttpMethod = "GET" } },
+                new List<RequestInfo> { new RequestInfo { RequestUrl = "/security/alerts/{id}", HttpMethod = "GET" } },
                 scopeType: scopeType);
 
             // Assert
@@ -100,7 +100,7 @@ namespace PermissionsService.Test
                         Assert.True(item.IsAdmin);
                         Assert.True(item.IsLeastPrivilege);
                         Assert.False(item.IsHidden);
-                    },
+                },
                     item =>
                     {
                         Assert.Equal("SecurityEvents.ReadWrite.All", item.ScopeName);
@@ -144,12 +144,12 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task GetLeastPrivilegePermissionScopesGivenAnExistingRequestUrl()
+        public async Task GetLeastPrivilegePermissionScopesGivenAnExistingRequestUrlAsync()
         {
             // Act
             var result = await _permissionsStore.GetScopesAsync(
                 new List<RequestInfo> { new RequestInfo { RequestUrl = "/security/alerts/{alert_id}", HttpMethod = "GET" } },
-                scopeType: ScopeType.Application, 
+                scopeType: ScopeType.Application,
                 leastPrivilegeOnly: true);
 
             // Assert
@@ -168,10 +168,10 @@ namespace PermissionsService.Test
         }
 
         [Theory]
-        [InlineData(ScopeType.DelegatedWork, 311)]
-        [InlineData(ScopeType.DelegatedPersonal, 113)]
-        [InlineData(ScopeType.Application, 279)]
-        public async Task GetAllPermissionScopesGivenNoRequestUrlFilteredByScopeType(ScopeType scopeType, int expectedCount)
+        [InlineData(ScopeType.DelegatedWork, 497)]
+        [InlineData(ScopeType.DelegatedPersonal, 468)]
+        [InlineData(ScopeType.Application, 475)]
+        public async Task GetAllPermissionScopesGivenNoRequestUrlFilteredByScopeTypeAsync(ScopeType scopeType, int expectedCount)
         {
             // Act
             var result = await _permissionsStore.GetScopesAsync(scopeType: scopeType);
@@ -182,18 +182,18 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task GetAllPermissionScopesGivenNoRequestUrl()
+        public async Task GetAllPermissionScopesGivenNoRequestUrlAsync()
         {
             // Act
             var result = await _permissionsStore.GetScopesAsync();
 
             // Assert
             Assert.NotEmpty(result.Results);
-            Assert.Equal(625, result.Results.Count);
+            Assert.Equal(939, result.Results.Count);
         }
 
         [Fact]
-        public async Task ReturnNullGivenANonExistentRequestUrl()
+        public async Task ReturnNullGivenANonExistentRequestUrlAsync()
         {
             // Act
             var result = await _permissionsStore.GetScopesAsync(
@@ -204,13 +204,13 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task ReturnNullGivenANonExistentHttpVerb()
+        public async Task ReturnNullGivenANonExistentHttpVerbAsync()
         {
             // Act
             var result = await _permissionsStore.GetScopesAsync(
-                new List<RequestInfo> { 
-                    new RequestInfo { 
-                        RequestUrl = "/security/alerts/{alert_id}", 
+                new List<RequestInfo> {
+                    new RequestInfo {
+                        RequestUrl = "/security/alerts/{alert_id}",
                         HttpMethod = "Foobar" } }); // non-existent http verb
 
             // Assert
@@ -220,19 +220,19 @@ namespace PermissionsService.Test
         [Theory]
         [InlineData(true, 6)]
         [InlineData(false, 12)]
-        public async Task ReturnLeastPrivilegePermissionsForSetOfResources(bool leastPrivilegeOnly, int expectedCount)
+        public async Task ReturnLeastPrivilegePermissionsForSetOfResourcesAsync(bool leastPrivilegeOnly, int expectedCount)
         {
             // Arrange
             var requests = new List<RequestInfo>()
             {
-                new RequestInfo { RequestUrl = "/security/alerts/{alert_id}", HttpMethod = "GET" },
-                new RequestInfo { RequestUrl = "/sites/{site_id}", HttpMethod = "GET" },
-                new RequestInfo { RequestUrl = "/me/tasks/lists/delta", HttpMethod = "GET" }          
+                new RequestInfo { RequestUrl = "/security/alerts/{id}", HttpMethod = "GET" },
+                new RequestInfo { RequestUrl = "/sites/{id}", HttpMethod = "GET" },
+                new RequestInfo { RequestUrl = "/me/tasks/lists/delta", HttpMethod = "GET" }
             };
 
             // Act
             var result = await _permissionsStore.GetScopesAsync(
-                requests: requests, 
+                requests: requests,
                 leastPrivilegeOnly: leastPrivilegeOnly);
 
             // Assert
@@ -242,7 +242,7 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task ReturnCorrectLeastPrivilegePermissionsForResourcesThatHaveMatchMoreThanOneTemplate()
+        public async Task ReturnCorrectLeastPrivilegePermissionsForResourcesThatHaveMatchMoreThanOneTemplateAsync()
         {
             // Arrange
             var request1 = new List<RequestInfo>()
@@ -252,7 +252,7 @@ namespace PermissionsService.Test
 
             var request2 = new List<RequestInfo>()
             {
-                new RequestInfo { RequestUrl = "/me/tasks/lists/{lists_id}", HttpMethod = "GET" }
+                new RequestInfo { RequestUrl = "/me/tasks/lists/{id}", HttpMethod = "GET" }
             };
 
             // Act
@@ -266,7 +266,7 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task ReturnErrorWhenLeastPrivilegePermissionsForSetOfResourcesIsNotAvailable()
+        public async Task ReturnErrorWhenLeastPrivilegePermissionsForSetOfResourcesIsNotAvailableAsync()
         {
             // Act
             var result = await _permissionsStore.GetScopesAsync(
@@ -279,19 +279,20 @@ namespace PermissionsService.Test
             Assert.Empty(result.Results);
             Assert.NotNull(result.Errors);
             Assert.Single(result.Errors);
-            Assert.Equal("No permissions found.", result.Errors.First().Message);
+            Assert.Equal("Permissions information for 'DELETE /no/least/privileged/permissions' was not found.", result.Errors.First().Message);
         }
 
         [Theory]
         [InlineData("/users/{id}/drive/items/{id}/workbook/worksheets/{id}/range")]
         [InlineData("/users/{id}/drive/items/{id}/workbook/worksheets/{id}/range()")]
         [InlineData("/users/{id}/drive/items/{id}/workbook/worksheets/{id}/range(address={value})")]
-        public async Task RemoveFunctionParametersFromRequestUrlsDuringLoadingAndQueryingOfPermissionsFiles(string url)
+        public async Task RemoveFunctionParametersFromRequestUrlsDuringLoadingAndQueryingOfPermissionsFilesAsync(string url)
         {
             // Act
             var result =
                 await _permissionsStore.GetScopesAsync(
                     scopeType: ScopeType.DelegatedWork,
+                    leastPrivilegeOnly: false,
                     requests: new List<RequestInfo>() { new RequestInfo { RequestUrl = url, HttpMethod = "GET" } });
 
             // Assert
@@ -306,41 +307,11 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task ReturnScopesForRequestUrlWhoseScopesInformationNotAvailable()
+        public async Task ReturnLocalizedPermissionsDescriptionsForSupportedLanguageAsync()
         {
             // Act
             var result = await _permissionsStore.GetScopesAsync(
-                new List<RequestInfo> { 
-                    new RequestInfo { 
-                        RequestUrl = "/lorem/ipsum/{id}", // bogus URL whose scopes info are unavailable
-                        HttpMethod = "GET" 
-                    } 
-               });
-
-            // Assert
-            Assert.Collection(result.Results,
-                item =>
-                {
-                    Assert.Equal("LoremIpsum.Read", item.ScopeName);
-                    Assert.Equal("Consent name unavailable", item.DisplayName);
-                    Assert.Equal("Consent description unavailable", item.Description);
-                    Assert.False(item.IsAdmin);
-                },
-                item =>
-                {
-                    Assert.Equal("LoremIpsum.ReadWrite", item.ScopeName);
-                    Assert.Equal("Consent name unavailable", item.DisplayName);
-                    Assert.Equal("Consent description unavailable", item.Description);
-                    Assert.False(item.IsAdmin);
-                });
-        }
-
-        [Fact]
-        public async Task ReturnLocalizedPermissionsDescriptionsForSupportedLanguage()
-        {
-            // Act
-            var result = await _permissionsStore.GetScopesAsync(
-                requests: new List<RequestInfo>() { new RequestInfo { RequestUrl = "/security/alerts/{alert_id}", HttpMethod = "GET" } },
+                requests: new List<RequestInfo>() { new RequestInfo { RequestUrl = "/security/alerts/{id}", HttpMethod = "GET" } },
                 scopeType: ScopeType.DelegatedWork,
                 locale: "es-ES");
 
@@ -363,7 +334,7 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task ReturnsErrorsForEmptyRequestUrl()
+        public async Task ReturnsErrorsForEmptyRequestUrlAsync()
         {
             // Act
             PermissionResult result =
@@ -383,7 +354,7 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task ReturnsErrorsForNullRequestUrl()
+        public async Task ReturnsErrorsForNullRequestUrlAsync()
         {
             // Act
             PermissionResult result =
@@ -403,7 +374,7 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task ReturnsErrorsForNonExistentRequestUrls()
+        public async Task ReturnsErrorsForNonExistentRequestUrlsAsync()
         {
             // Act
             PermissionResult result =
@@ -423,13 +394,13 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task ReturnsUniqueListOfPermissionsForPathsWithSharedPermissions()
+        public async Task ReturnsUniqueListOfPermissionsForPathsWithSharedPermissionsAsync()
         {
             // Act
             PermissionResult result =
-                await _permissionsStore.GetScopesAsync(requests: new List<RequestInfo>() { 
-                    new RequestInfo { RequestUrl = "/accessreviews", HttpMethod = "GET" }, 
-                    new RequestInfo { RequestUrl = "/accessreviews/{id}", HttpMethod = "GET" } }, 
+                await _permissionsStore.GetScopesAsync(requests: new List<RequestInfo>() {
+                    new RequestInfo { RequestUrl = "/accessreviews", HttpMethod = "GET" },
+                    new RequestInfo { RequestUrl = "/accessreviews/{id}", HttpMethod = "GET" } },
                     scopeType: ScopeType.DelegatedWork);
 
             // Assert
@@ -449,7 +420,7 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task FetchPermissionsDescriptionsFromGithub()
+        public async Task FetchPermissionsDescriptionsFromGithubAsync()
         {
             //Arrange
             string org = "\\Org";
@@ -463,7 +434,7 @@ namespace PermissionsService.Test
         }
 
         [Fact]
-        public async Task FetchPermissionsDescriptionsFromGithubGivenARequestUrl()
+        public async Task FetchPermissionsDescriptionsFromGithubGivenARequestUrlAsync()
         {
             // Arrange
             string org = "\\Org";
